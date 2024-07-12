@@ -83,15 +83,7 @@ Connect-AzAccount | Out-Null
 #Connect Graph 
 Connect-Graph | Out-Null
 
-
-#Connect-AzAccount
-#Set-AzContext -Subscription "VF Azure" | Out-Null
-#$workspaceName = "IAM-PRD-Log"
-#$workspaceRG = "IAM-PRD-RSG"
-#$WorkSpaceId = (Get-AzOperationalInsightsWorkspace -Name "IAM-PRD-Log" -ResourceGroupName IAM-PRD-RSG).CustomerId.Guid
-
-
-# Define KQL query with a 90-day threshold
+# Define KQL query with a custom threshold
 $query = @"
 SigninLogs
 | where TimeGenerated > ago($($thresholdQuery)d)
