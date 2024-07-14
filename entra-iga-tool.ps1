@@ -1,6 +1,6 @@
 <#
 .DESCRIPTION
-  This script identifies inactive BOB admins based on the Entra-ID Sign-In logs.
+  This script identifies inactive application users based on the Entra-ID Sign-In logs.
 .PARAMETER Param1
   Set the email where the report will be send to
   Set the thresholdValue that will set the threshold for inactive users
@@ -19,7 +19,11 @@
 
 param (
     [Parameter(Mandatory = $true)]
-    [string]$thresholdQuery
+    [string]$AppName,
+    [string]$groupPreFix,
+    [string]$groupnameKeyword,
+    [string]$thresholdQuery,
+    [string]$EmailTo
 )
 
 
@@ -61,7 +65,7 @@ function Remove-GroupsFromUser {
     foreach ($group in $filteredGroups) {
         # Remove user from the group
         Remove-MgGroupMemberByRef -GroupId $group.Id -DirectoryObjectId $userId
-        Write-Output "User $($user.UserPrincipalName) was removed from group $($group.DisplayName)"
+        Write-Host "User $($user.UserPrincipalName) was removed from group $($group.DisplayName)"
         
         # Log the removal in the CSV file
         $logEntry = "$($user.UserPrincipalName),$($group.DisplayName),$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
@@ -70,12 +74,11 @@ function Remove-GroupsFromUser {
 }
 
 
-
-
 #date
 $today = Get-Date -Format "dd-MM-yy"
-#Path to save the CSV Export
-$filePath = "/Users/marcel.nguyen/Documents/Docker_inactive_users_$($thresholdQuery)days_$($today).csv"
+
+#Path to save the CSV Export (Mac OS)
+$filePath = "/Users/*your-username*/Documents/Docker_inactive_users_$($thresholdQuery)days_$($today).csv"
 
 #connect AzAccount for Keyvault and Log Analytics
 Connect-AzAccount | Out-Null
@@ -83,20 +86,19 @@ Connect-AzAccount | Out-Null
 #Connect Graph 
 Connect-Graph | Out-Null
 
-# Define KQL query with a custom threshold
+# Define KQL query with a 90-day threshold
 $query = @"
 SigninLogs
 | where TimeGenerated > ago($($thresholdQuery)d)
-| where AppDisplayName contains 'Docker'
+| where AppDisplayName contains '$($AppName)'
 | summarize LatestSignIn = arg_max(TimeGenerated, *) by UserPrincipalName
 | project UserPrincipalName, LatestSignIn
 "@
 
-
 # Execute the KQL query
 $kqlQuery = Invoke-AzOperationalInsightsQuery -WorkspaceId $WorkspaceID -Query $query
 
-# Extract results into a dictionary for easier lookups
+# Extract results into a hashtable
 $activeUsers = @{}
 foreach ($result in $kqlQuery.Results) {
     $activeUsers[$result.UserPrincipalName] = $result.LatestSignIn
@@ -106,7 +108,7 @@ foreach ($result in $kqlQuery.Results) {
 $query2 = @"
 SigninLogs
 | where TimeGenerated > ago(550d)
-| where AppDisplayName contains 'Docker'
+| where AppDisplayName contains '$($AppName)'
 | summarize LatestSignIn = arg_max(TimeGenerated, *) by UserPrincipalName
 | project AppDisplayName, UserPrincipalName, LatestSignIn
 "@
@@ -125,39 +127,39 @@ foreach ($result in $kqlQuery2.Results) {
     $AppDisplayNames[$result.UserPrincipalName] = $result.AppDisplayName
 }
 
-# Get Docker group(s)
-$docker_groups = Get-MgGroup -All | Where-Object { $_.DisplayName -like "*acl_docker*" }
+# Get app group(s)
+$app_groups = Get-MgGroup -All | Where-Object { $_.DisplayName -match "$($groupPreFix)" -and $_.DisplayName -match "$($groupnameKeyword)" }
 
-# Collect all docker users into an array
-$docker_users = @()
-foreach ($group in $docker_groups) {
-    $acl_docker_users = Get-MgGroupMember -GroupId $group.Id -All
+# Collect all app users into an array
+$app_users = @()
+foreach ($group in $app_groups) {
+    $app_groups = Get-MgGroupMember -GroupId $group.Id -All
     Write-Host "Processing $($group.DisplayName)" -ForegroundColor Yellow
 
-    foreach ($user in $acl_docker_users) {
+    foreach ($user in $app_groups) {
         $userDetails = Get-MgUser -UserId $user.Id
         Write-Host "Processing $($userDetails.UserPrincipalName)"
-        $docker_users += [PSCustomObject]@{
+        $app_users += [PSCustomObject]@{
             UserPrincipalName = $userDetails.UserPrincipalName
         }
     }
 }
 
-# Remove duplicates as users can be assigned to multiple admin groups
-$unique_docker_users = $docker_users | Sort-Object -Unique -Property UserPrincipalName
+# Remove duplicates as users can be assigned to multiple app groups
+$unique_app_users = $app_users | Sort-Object -Unique -Property UserPrincipalName
 
-Write-Output "Docker users in groups: $($unique_docker_users.count)"
+Write-Host "$($AppName) users in groups: $($unique_app_users.count)"
 
-# Initialize collections for admins
-$activeDockerUsers = @()
-$inactiveDockerUsers = @()
+# Initialize arrays for active and inactive users
+$activeAppUsers = @()
+$inactiveAppUsers = @()
 
-foreach ($user in $unique_docker_users) {
+foreach ($user in $unique_app_users) {
     if ($activeUsers.ContainsKey($user.UserPrincipalName)) {
         $lastSignIn = $activeUsers[$user.UserPrincipalName]
         $AppDisplayName = $AppDisplayNames[$user.UserPrincipalName]
-        Write-Host "$($user.UserPrincipalName) is active in Docker." #-ForegroundColor Green
-        $activeDockerUsers += [PSCustomObject]@{
+        Write-Host "$($user.UserPrincipalName) is active in $($AppName)." #-ForegroundColor Green
+        $activeAppUsers += [PSCustomObject]@{
             UserPrincipalName = $user.UserPrincipalName
             LatestSignIn      = $lastSignIn
             AppDisplayName    = $AppDisplayName
@@ -172,7 +174,7 @@ foreach ($user in $unique_docker_users) {
         }
         $AppDisplayName = $AppDisplayNames[$user.UserPrincipalName]
         Write-Host "$($user.UserPrincipalName) has not logged in past $($thresholdQuery) days. Last sign-in date: $lastSignIn" #-ForegroundColor Red
-        $inactiveDockerUsers += [PSCustomObject]@{
+        $inactiveAppUsers += [PSCustomObject]@{
             UserPrincipalName = $user.UserPrincipalName
             LatestSignIn      = $lastSignIn
             AppDisplayName    = $AppDisplayName
@@ -180,22 +182,13 @@ foreach ($user in $unique_docker_users) {
     }
 }
 
-# Export inactive Admins with their last sign-in date to a CSV file
-$inactiveDockerUsers | Export-Csv -Path $filePath -NoTypeInformation
+# Export inactive users with their last sign-in date to a CSV file
+$inactiveAppUsers | Export-Csv -Path $filePath -NoTypeInformation
 
 
-# Output the counts
-Write-Output "Number of active users: $($activeDockerUsers.Count)" #-ForeGroundColor Green
-Write-Output "Number of inactive users: $($inactiveDockerUsers.Count)" #-ForeGroundColor Red
+# Display the counts
+Write-Host "Number of active users: $($activeAppUsers.Count)" -ForeGroundColor Green
+Write-Host "Number of inactive users: $($inactiveAppUsers.Count)" -ForeGroundColor Red
 
-Write-Output "CSV-File Exported to: $filePath" #-ForegroundColor DarkCyan
-
-
-#Remove inactive users from BOB Admins groups
-#foreach($user in $inactiveAdmins){
-#    Remove-GroupsFromUser -UserName $user.UserPrincipalName
-#}
-
-
-
+Write-Host "CSV-File Exported to: $filePath" -ForegroundColor DarkCyan
 
