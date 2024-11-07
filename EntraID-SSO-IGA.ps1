@@ -2,7 +2,6 @@
 .DESCRIPTION
   This script identifies inactive application users based on the Entra-ID Sign-In logs.
 .PARAMETER Param1
-  Set the email where the report will be send to
   Set the thresholdValue that will set the threshold for inactive users
 .INPUTS
   <Does the script accept an input>
@@ -22,8 +21,7 @@ param (
     [string]$AppName,
     [string]$groupPreFix,
     [string]$groupnameKeyword,
-    [string]$thresholdQuery,
-    [string]$EmailTo
+    [string]$thresholdQuery
 )
 
 #date
